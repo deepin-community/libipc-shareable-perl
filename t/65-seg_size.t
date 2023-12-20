@@ -1,8 +1,20 @@
 use warnings;
 use strict;
 
+use Config;
 use IPC::Shareable;
 use Test::More;
+
+BEGIN {
+    if (! $ENV{CI_TESTING}) {
+        plan skip_all => "Not on a legit CI platform...";
+    }
+    if ($Config{ivsize} < 8) {
+        plan skip_all => "This test script can't be run on a perl < 64-bit";
+    }
+}
+
+warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
 use constant BYTES => 2000000; # ~2MB
 
@@ -94,5 +106,8 @@ if ($^O eq 'linux') {
 }
 
 $k->clean_up_all;
+
+IPC::Shareable::_end;
+warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
 done_testing();

@@ -12,29 +12,33 @@ BEGIN {
 
 warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
+# bad param
+
+my $ok = eval { IPC::Shareable::singleton(); 1 };
+is $ok, undef, "singleton() croaks if no GLUE param sent in";
+like $@, qr/GLUE parameter/, "...and error is sane";
+
 # singleton no exit notice
+
 my ($proc, $warning);
 
 {
     local $SIG{__WARN__} = sub {$warning = shift;};
 
-    $proc = IPC::Shareable->singleton('LOCK', 1);
+    $proc = IPC::Shareable::singleton('LOCK');
 
-    is $proc, $$, "process ID $$ returned from singleton() ok on first call";
+    is $proc, $$, "Class param is added if called in IPC::Shareable::singleton() format";
 
     $proc = -1;
 
     is $proc, -1, "\$proc set to -1 ok";
 
-    $proc = IPC::Shareable->singleton('LOCK', 1);
+    $proc = IPC::Shareable::singleton('LOCK');
 }
 
 END {
     is $proc, -1, "singleton() on second call doesn't return anything ok";
-    like
-        $warning,
-        qr/exited due to exclusive shared memory collision/,
-        "singleton() warns if warn is enabled";
+    is $warning, undef, "singleton outputs no warnings by default";
 
     IPC::Shareable::_end;
     warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};

@@ -21,28 +21,29 @@ use Scalar::Util;
 use String::CRC32;
 use Storable 0.6 qw(freeze thaw);
 
-our $VERSION = '1.06';
-
-$SIG{CHLD} = 'IGNORE';
+our $VERSION = '1.13';
 
 use constant {
-    LOCK_SH      => 1,
-    LOCK_EX      => 2,
-    LOCK_NB      => 4,
-    LOCK_UN      => 8,
+    LOCK_SH               => 1,
+    LOCK_EX               => 2,
+    LOCK_NB               => 4,
+    LOCK_UN               => 8,
 
-    DEBUGGING    => ($ENV{SHAREABLE_DEBUG} or 0),
-    SHM_BUFSIZ   => 65536,
-    SEM_MARKER   => 0,
-    SHM_EXISTS   => 1,
+    DEBUGGING             => ($ENV{SHAREABLE_DEBUG} or 0),
 
-    SHMMAX_BYTES => 1073741824, # 1 GB
+    SHM_BUFSIZ            => 65536,
+    SEM_MARKER            => 0,
+    SHM_EXISTS            => 1,
+
+    SHMMAX_BYTES          => 1073741824, # 1 GB
 
     # Perl sends in a double as opposed to an integer to shmat(), and on some
     # systems, this causes the IPC system to round down to the maximum integer
     # size of 0x80000000 we correct that when generating keys with CRC32
 
-    MAX_KEY_INT_SIZE => 0x80000000,
+    MAX_KEY_INT_SIZE      => 0x80000000,
+
+    EXCLUSIVE_CHECK_LIMIT => 10, # Number of times we'll check for existing segs
 };
 
 require Exporter;
@@ -97,9 +98,11 @@ my %default_options = (
     destroy    => 0,
     mode       => 0666,
     size       => SHM_BUFSIZ,
+    protected  => 0,
     limit      => 1,
     graceful   => 0,
     warn       => 0,
+    tidy       => 0,
     serializer => 'storable',
 );
 
@@ -123,9 +126,9 @@ sub TIEHASH {
 sub STORE {
     my $knot = shift;
 
-    my $sid = $knot->seg->{_id};
-
-    $global_register{$sid} ||= $knot;
+    if (! exists $global_register{$knot->seg->id}) {
+        $global_register{$knot->seg->id} = $knot;
+    }
 
     $knot->{_data} = $knot->_decode($knot->seg) unless ($knot->{_lock});
 
@@ -161,9 +164,9 @@ sub STORE {
 sub FETCH {
     my $knot = shift;
 
-    my $sid = $knot->seg->{_id};
-
-    $global_register{$sid} ||= $knot;
+    if (! exists $global_register{$knot->seg->id}) {
+        $global_register{$knot->seg->id} = $knot;
+    }
 
     my $data;
     if ($knot->{_lock} || $knot->{_iterating}) {
@@ -283,7 +286,10 @@ sub EXTEND {
 sub PUSH {
     my $knot = shift;
 
-    $global_register{$knot->seg->id} ||= $knot;
+    if (! exists $global_register{$knot->seg->id}) {
+        $global_register{$knot->seg->id} = $knot;
+    }
+
     $knot->{_data} = $knot->_decode($knot->seg, $knot->{_data}) unless $knot->{_lock};
 
     push @{$knot->{_data}}, @_;
@@ -395,6 +401,19 @@ sub new {
     }
 }
 sub global_register {
+     # This is a ridiculous way to do this, but if we don't call Dumper, hashes
+    # that are created in a separate process than the parent hash don't
+    # show up properly in the global register. t/81
+
+    local $SIG{__WARN__} = sub {
+        my ($warning) = @_;
+        if ($warning !~ /hash after insertion/) {
+            warn $warning;
+        }
+    };
+
+    Dumper \%global_register;
+
     return \%global_register;
 }
 sub process_register {
@@ -416,64 +435,7 @@ sub attributes {
 sub ipcs {
     my $count = `ipcs -m | wc -l`;
     chomp $count;
-    return $count;
-}
-sub spawn {
-    my ($knot, %opts) = @_;
-
-    croak "spawn() requires a key/glue sent in..." if ! defined $opts{key};
-
-    $opts{mode} = 0666 if ! defined $opts{mode};
-
-    _spawn(
-        key     => $opts{key},
-        mode    => $opts{mode},
-    );
-}
-sub _spawn {
-    my (%opts) = @_;
-
-    my $pid = fork;
-    return if $pid;
-
-    if (! $pid) {
-        tie my %h, 'IPC::Shareable', {
-            key       => $opts{key},
-            create    => 1,
-            #exclusive => 1,
-            destroy   => $opts{destroy},
-            mode      => $opts{mode},
-        };
-
-        $h{__ipc}->{run} = 1;
-
-        while (1) {
-            local $SIG{__WARN__} = sub {};
-            last if ! defined $h{__ipc};
-            last if ! $h{__ipc}->{run};
-        }
-
-        IPC::Shareable->clean_up_all if $opts{destroy};
-        exit 0;
-    }
-}
-sub unspawn {
-    shift;
-    my ($key, $destroy) = @_;
-
-    $destroy ||= 0;
-
-    tie my %h, 'IPC::Shareable', {
-        key       => $key,
-        destroy   => $destroy,
-        mode      => 0666,
-    };
-
-    $h{__ipc}->{run} = 0;
-
-    sleep 1;
-
-    IPC::Shareable->clean_up_all if $destroy;
+    return int($count);
 }
 sub lock {
     my ($knot, $flags) = @_;
@@ -519,19 +481,52 @@ sub unlock {
 sub clean_up {
     my $class = shift;
 
-    for my $s (values %process_register) {
+    for my $id (keys %process_register) {
+        my $s = $process_register{$id};
         next unless $s->attributes('owner') == $$;
+        next if $s->attributes('protected');
         remove($s);
     }
 }
 sub clean_up_all {
     my $class = shift;
-    for my $s (values %process_register) {
+
+    my $global_register = __PACKAGE__->global_register;
+
+    for my $id (keys %$global_register) {
+        my $s = $global_register->{$id};
+        next if $s->attributes('protected');
         remove($s);
     }
+}
+sub clean_up_protected {
+    my ($knot, $protect_key);
 
-    for my $s (values %global_register) {
-        remove($s);
+    if (scalar @_ == 2) {
+        ($knot, $protect_key) = @_;
+    }
+    if (scalar @_ == 1) {
+        ($protect_key) = @_;
+    }
+
+    if (! defined $protect_key) {
+        croak "clean_up_protected() requires a \$protect_key param";
+    }
+
+    if ($protect_key !~ /^\d+$/) {
+        croak
+            "clean_up_protected() \$protect_key must be an integer. You sent $protect_key";
+    }
+
+    my $global_register = __PACKAGE__->global_register;
+
+    for my $id (keys %$global_register) {
+        my $s = $global_register->{$id};
+        my $stored_key = $s->attributes('protected');
+
+        if ($stored_key && $stored_key == $protect_key) {
+            remove($s);
+        }
     }
 }
 sub remove {
@@ -558,6 +553,15 @@ sub sem {
     return $knot->{_sem} if defined $knot->{_sem};
 }
 sub singleton {
+
+    # If called with IPC::Shareable::singleton() as opposed to
+    # IPC::Shareable->singleton(), the class isn't sent in. Check
+    # for this and fix it if necessary
+
+    if (! defined $_[0] || $_[0] ne __PACKAGE__) {
+        unshift @_, __PACKAGE__;
+    }
+
     my ($class, $glue, $warn) = @_;
 
     if (! defined $glue) {
@@ -579,12 +583,7 @@ sub singleton {
 }
 
 END {
-    for my $s (values %process_register) {
-        unlock($s);
-        next unless $s->attributes('destroy');
-        next unless $s->attributes('owner') == $$;
-        remove($s);
-    }
+    _end();
 }
 
 # --- Private methods below
@@ -602,6 +601,15 @@ sub _encode {
     }
 
     return undef;
+}
+sub _end {
+    for my $s (values %process_register) {
+        unlock($s);
+        next if $s->attributes('protected');
+        next if ! $s->attributes('destroy');
+        next if $s->attributes('owner') != $$;
+        remove($s);
+    }
 }
 sub _decode {
     my ($knot, $seg) = @_;
@@ -718,7 +726,9 @@ sub _tie {
 
         if (! defined $exclusive) {
             if ($knot->attributes('warn')) {
-                warn "Process ID $$ exited due to exclusive shared memory collision\n";
+                my $key = lc(sprintf("0x%X", $knot->_shm_key));
+
+                warn "Process ID $$ exited due to exclusive shared memory collision at segment/semaphore key '$key'\n";
             }
             exit(0);
         }
@@ -776,7 +786,11 @@ sub _tie {
     $knot->{_data} = _thaw($seg);
 
     if ($sem->getval(SEM_MARKER) != SHM_EXISTS) {
-        $global_register{$knot->seg->id} ||= $knot;
+
+        if (! exists $global_register{$knot->seg->id}) {
+            $global_register{$knot->seg->id} = $knot;
+        }
+
         $process_register{$knot->seg->id} ||= $knot;
         if (! $sem->setval(SEM_MARKER, SHM_EXISTS)){
             croak "Couldn't set semaphore during object creation: $!";
@@ -844,13 +858,50 @@ sub _shm_key {
 sub _shm_key_rand {
     my $key;
 
-    do {
-        $key = int(rand(1_000_000));
-    } while ($used_ids{$key});
+    # Unfortunatly, the only way I know how to check if a segment exists is
+    # to actually create it. We must do that here, then remove it just to
+    # ensure the slot is available
+
+    my $verified_exclusive = 0;
+
+    my $check_count = 0;
+
+    while (! $verified_exclusive && $check_count < EXCLUSIVE_CHECK_LIMIT) {
+        $check_count++;
+
+        $key = _shm_key_rand_int();
+
+        next if $used_ids{$key};
+
+        my $flags;
+        $flags |= IPC_CREAT;
+        $flags |= IPC_EXCL;
+
+        my $seg;
+
+        my $shm_slot_available = eval {
+            $seg = IPC::Shareable::SharedMem->new($key, 1, $flags);
+            1;
+        };
+
+        if ($shm_slot_available) {
+            $verified_exclusive = 1;
+            $seg->remove if $seg;
+        }
+    }
+
+    if (! $verified_exclusive) {
+        croak
+            "_shm_key_rand() can't get an available key after $check_count tries";
+    }
 
     $used_ids{$key}++;
 
     return $key;
+}
+sub _shm_key_rand_int {
+    srand();
+    return int(rand(1_000_000));
 }
 sub _shm_flags {
     # --- Parses the anonymous hash passed to constructors; returns a list
@@ -1045,23 +1096,28 @@ IPC::Shareable - Use shared memory backed variables across processes
     tie ARRAY,  'IPC::Shareable', OPTIONS;
     tie HASH,   'IPC::Shareable', OPTIONS;
 
-    (tied VARIABLE)->lock;
-    (tied VARIABLE)->unlock;
+    tied(VARIABLE)->lock;
+    tied(VARIABLE)->unlock;
 
-    (tied VARIABLE)->lock(LOCK_SH|LOCK_NB)
+    tied(VARIABLE)->lock(LOCK_SH|LOCK_NB)
         or print "Resource unavailable\n";
 
-    my $segment   = (tied VARIABLE)->seg;
-    my $semaphore = (tied VARIABLE)->sem;
+    my $segment   = tied(VARIABLE)->seg;
+    my $semaphore = tied(VARIABLE)->sem;
 
-    (tied VARIABLE)->remove;
+    tied(VARIABLE)->remove;
 
-    IPC::Shareable->clean_up;
-    IPC::Shareable->clean_up_all;
+    IPC::Shareable::clean_up;
+    IPC::Shareable::clean_up_all;
+    IPC::Shareable::clean_up_protected;
 
     # Ensure only one instance of a script can be run at any time
 
     IPC::Shareable->singleton('UNIQUE SCRIPT LOCK STRING');
+
+    # Get the actual IPC::Shareable tied object
+
+    my $knot = tied(VARIABLE); # Dereference first if using a tied reference
 
 =head1 DESCRIPTION
 
@@ -1176,6 +1232,21 @@ override this default.
 
 Default: C<IPC::Shareable::SHM_BUFSIZ()> (ie. B<65536>)
 
+=head2 protected
+
+If set, the C<clean_up()> and C<clean_up_all()> routines will not remove the
+segments or semaphores related to the tied object.
+
+Set this to a specific integer so we can pass the value to any child objects
+created under the main one.
+
+To clean up protected objects, call
+C<< (tied %object)->clean_up_protected(integer) >>, where 'integer' is the
+value you set the C<protected> option to. You can call this cleanup routine in
+the script you created the segment, or anywhere else, at any time.
+
+Default: B<0>
+
 =head2 limit
 
 This field will allow you to set a segment size larger than the default maximum
@@ -1198,6 +1269,9 @@ removed.
 Use this option with care. In particular you should not use this option in a
 program that will fork after binding the data.  On the other hand, shared memory
 is a finite resource and should be released if it is not needed.
+
+B<NOTE>: If the segment was created with its L</protected> attribute set,
+it will not be removed upon program completion, even if C<destroy> is set.
 
 Default: B<false>
 
@@ -1223,11 +1297,12 @@ Default: B<storable>
 
 Default values for options are:
 
-    key         => IPC_PRIVATE,
+    key         => IPC_PRIVATE, # 0
     create      => 0,
     exclusive   => 0,
-    mode        => 0,
-    size        => IPC::Shareable::SHM_BUFSIZ(),
+    mode        => 0666,
+    size        => IPC::Shareable::SHM_BUFSIZ(), # 65536
+    protected   => 0,
     limit       => 1,
     destroy     => 0,
     graceful    => 0,
@@ -1241,10 +1316,19 @@ Default values for options are:
 
 Instantiates and returns a reference to a hash backed by shared memory.
 
+    my $href = IPC::Shareable->new(key => "testing", create => 1);
+
+    $href=>{a} = 1;
+
+    # Call tied() on the dereferenced variable to access object methods
+    # and information
+
+    tied(%$href)->ipcs;
+
 Parameters:
 
 Hash, Optional: See the L</OPTIONS> section for a list of all available options.
-Most often, you'll want to send in the B<key>, B<create> and B<destroy> options.
+Most often, you'll want to send in the B<key> and B<create> options.
 
 It is possible to get a reference to an array or scalar as well. Simply send in
 either C<< var = > 'ARRAY' >> or C<< var => 'SCALAR' >> to do so.
@@ -1273,57 +1357,10 @@ Default: B<false>
 =head2 ipcs
 
 Returns the number of instantiated shared memory segments that currently exist
-on the system.
+on the system. This isn't precise; it simply does a C<wc -l> line count on your
+system's C<ipcs -m> call. It is guaranteed though to produce reliable results.
 
 Return: Integer
-
-=head2 spawn(%opts)
-
-Spawns a forked process running in the background that holds the shared memory
-segments backing your variable open.
-
-Parameters:
-
-Paremters are sent in as a hash.
-
-    key => $glue
-
-Mandatory, String/Integer: The glue that you will be accessing your data as.
-
-    mode => 0666
-
-Optional, Integer: The read/write permissions on the variable. Defaults to
-C<0666>.
-
-Example:
-
-    use IPC::Shareable;
-
-    # The following line sets things up and returns
-
-    IPC::Shareable->spawn(key => 'GLUE STRING');
-
-Now, either within the same script, or any other script on the system, your
-data will be available at the key/glue C<GLUE STRING>. Call
-L<unspawn()|/unspawn($key, $destroy)> to remove it.
-
-=head2 unspawn($key, $destroy)
-
-This method will kill off the background process created with
-L<spawn()|/spawn(%opts)>.
-
-Parameters:
-
-    $key
-
-Mandatory, String/Integer: The glue (aka key) used in the call to C<spawn()>.
-
-    $destroy
-
-Optional, Bool. If set to a true value, we will remove all semaphores and memory
-segments related to your data, thus removing the data in its entirety. If not
-set to a true value, we'll leave the memory segments in place, and you'll be
-able to re-attach to the data at any time. Defaults to false (C<0>).
 
 =head2 lock($flags)
 
@@ -1332,15 +1369,15 @@ of lock to acquire.  If C<$flags> is not specified, an exclusive
 read/write lock is obtained.  Acceptable values for C<$flags> are
 the same as for the C<flock()> system call.
 
-Returns C<true> on success, and C<undef> on error.  For non-blocking calls
+Returns C<true> on success, and C<undef> on error. For non-blocking calls
 (see below), the method returns C<0> if it would have blocked.
 
 Obtain an exclusive lock like this:
 
         tied(%var)->lock(LOCK_EX); # same as default
 
-Only one process can hold an exclusive lock on the shared memory at
-a given time.
+Only one process can hold an exclusive lock on the shared memory at a given
+time.
 
 Obtain a shared (read) lock:
 
@@ -1364,7 +1401,7 @@ using these calls in order for locking to work.  See the C<flock()> call for
 details.
 
 Locks are inherited through forks, which means that two processes actually
-can possess an exclusive lock at the same time.  Don't do that.
+can possess an exclusive lock at the same time. Don't do that.
 
 The constants C<LOCK_EX>, C<LOCK_SH>, C<LOCK_NB>, and C<LOCK_UN> are available
 for import using any of the following export tags:
@@ -1406,6 +1443,8 @@ Parameters:
 Optional, String: The name of the attribute. If sent in, we'll return the value
 of this specific attribute. Returns C<undef> if the attribute isn't found.
 
+Attributes are the C<OPTIONS> that were used to create the object.
+
 Returns: A hash reference of all attributes if C<$attributes> isn't sent in, the
 value of the specific attribute if it is.
 
@@ -1425,7 +1464,7 @@ segment and semaphore objects.
 
 IPC::Shareable provides methods to implement application-level
 advisory locking of the shared data structures.  These methods are
-called C<shlock()> and C<shunlock()>.  To use them you must first get the
+called C<lock()> and C<unlock()>. To use them you must first get the
 object underlying the tied variable, either by saving the return
 value of the original call to C<tie()> or by using the built-in C<tied()>
 function.
@@ -1450,15 +1489,15 @@ This will place an exclusive lock on the data of C<$scalar>.  You can
 also get shared locks or attempt to get a lock without blocking.
 
 L<IPC::Shareable> makes the constants C<LOCK_EX>, C<LOCK_SH>, C<LOCK_UN>, and
-C<LOCK_NB> exportable to your address space with the export tags
-C<:lock>, C<:flock>, or C<:all>.  The values should be the same as
-the standard C<flock> option arguments.
+C<LOCK_NB> exportable to your address space with the export tags C<:lock>,
+C<:flock>, or C<:all>.  The values should be the same as the standard C<flock>
+option arguments.
 
     if (tied(%hash)->lock(LOCK_SH|LOCK_NB)){
         print "The value is $hash{a}\n";
         tied(%hash)->unlock;
     } else {
-        print "Another process has an exlusive lock.\n";
+        print "Another process has an exclusive lock.\n";
     }
 
 If no argument is provided to C<lock>, it defaults to C<LOCK_EX>.
@@ -1471,11 +1510,6 @@ writing to the shared storage even if the advisory locks aren't being used.
 
 Using the advisory locks can speed up processes that are doing several writes/
 reads at the same time.
-
-=head1 REFERENCES
-
-Although references can reside within a shared data structure, the tied variable
-can not be a reference itself.
 
 =head1 DESTRUCTION
 
@@ -1495,6 +1529,9 @@ shared memory segment when the process calling C<tie()> exits gracefully.
 
 B<NOTE>: The destruction is handled in an C<END> block. Only those memory
 segments that are tied to the current process will be removed.
+
+B<NOTE>: If the segment was created with its L</protected> attribute set,
+it will not be removed in the C<END> block, even if C<destroy> is set.
 
 =head2 remove
 
@@ -1525,6 +1562,8 @@ This is a class method that provokes L<IPC::Shareable> to remove all
 shared memory segments created by the process.  Segments not created
 by the calling process are not removed.
 
+This method will not clean up segments created with the C<protected> option.
+
 =head2 clean_up_all
 
     IPC::Shareable->clean_up_all;
@@ -1540,6 +1579,36 @@ by the calling process are not removed.
 This is a class method that provokes L<IPC::Shareable> to remove all
 shared memory segments encountered by the process.  Segments are
 removed even if they were not created by the calling process.
+
+This method will not clean up segments created with the C<protected> option.
+
+=head2 clean_up_protected($protect_key)
+
+If a segment is created with the C<protected> option, it, nor its children will
+be removed during calls of C<clean_up()> or C<clean_up_all()>.
+
+When setting L</protected>, you specified a lock key integer. When calling this
+method, you must send that integer in as a parameter so we know which segments
+to clean up.
+
+    my $protect_key = 93432;
+
+    IPC::Shareable->clean_up_protected($protect_key);
+
+    # or
+
+    tied($var)->clean_up_protected($protect_key;
+
+    # or
+
+    $knot->clean_up_protected($protect_key)
+
+Parameters:
+
+    $protect_key
+
+Mandatory, Integer: The integer protect key you assigned wit the C<protected>
+option
 
 =head1 RETURN VALUES
 
@@ -1562,8 +1631,8 @@ Steve Bertrand <steveb@cpan.org>
 
 =item 1
 
-If the process has been smoked by an untrapped signal, the binding
-will remain in shared memory.  If you're cautious, you might try
+If the process has been smoked by an untrapped signal, the binding will remain
+in shared memory.  If you're cautious, you might try:
 
  $SIG{INT} = \&catch_int;
  sub catch_int {
@@ -1589,7 +1658,7 @@ When using C<lock()> to lock a variable, be careful to guard against
 signals.  Under normal circumstances, C<IPC::Shareable>'s C<END> method
 unlocks any locked variables when the process exits.  However, if an
 untrapped signal is received while a process holds an exclusive lock,
-C<DESTROY> will not be called and the lock may be maintained even though
+C<END> will not be called and the lock may be maintained even though
 the process has exited.  If this scares you, you might be better off
 implementing your own locking methods.
 
@@ -1611,7 +1680,7 @@ locking mechanism implemented in IPC::Shareable.
 There is a program called C<ipcs>(1/8) (and C<ipcrm>(1/8)) that is
 available on at least Solaris and Linux that might be useful for
 cleaning moribund shared memory segments or semaphore sets produced
-by bugs in either IPC::Shareable or applications using it.
+by bugs in either L<IPC::Shareable> or applications using it.
 
 Examples:
 
@@ -1649,13 +1718,13 @@ obtained a lock (it is better to obtain a read (or write) lock before
 iterating over a hash tied to L<IPC::Shareable>, but we attempt this
 optimization if you do not).
 
-The C<fetch>/C<thaw> operation is performed
+For tied hashes, the C<fetch>/C<thaw> operation is performed
 when the first key is accessed.  Subsequent key and and value
 accesses are done without accessing shared memory.  Doing an
 assignment to the hash or fetching another value between key
-accesses causes the hash to be replaced from shared memory.  The
+accesses causes the hash to be replaced from shared memory. The
 state of the iterator in this case is not defined by the Perl
-documentation.  Caveat Emptor.
+documentation. Caveat Emptor.
 
 =back
 
@@ -1681,5 +1750,3 @@ Thanks to all those with comments or bug fixes, especially
 
 L<perltie>, L<Storable>, C<shmget>, C<ipcs>, C<ipcrm> and other SysV IPC manual
 pages.
-
-

@@ -12,21 +12,10 @@ BEGIN {
 
 warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
-my $k = tie my $sv, 'IPC::Shareable', {
-    create => 1,
-    destroy => 1,
-    size => 1,
-};
+my @command = ('date');
+my $rc = system( @command );
 
-my $ok = eval {
-    $sv = "more than one byte";
-    1;
-};
-
-is $ok, undef, "Overwriting the byte boundary size of an shm barfs ok";
-like $@, qr/exceeds shared segment size/, "...and the error is sane";
-
-(tied $sv)->clean_up_all;
+is $rc, 0, "system() returns success ok after moving CHLD handler";
 
 IPC::Shareable::_end;
 warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};

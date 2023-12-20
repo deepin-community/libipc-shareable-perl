@@ -5,6 +5,14 @@ use Carp;
 use IPC::Shareable;
 use Test::More;
 
+BEGIN {
+    if (! $ENV{CI_TESTING}) {
+        plan skip_all => "Not on a legit CI platform...";
+    }
+}
+
+warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
+
 my $t  = 1;
 my $ok = 1;
 
@@ -81,6 +89,9 @@ if ($pid == 0) {
 
     is defined $d, '', "parent: after clean_up_all(), everything's gone";
 }
+
+IPC::Shareable::_end;
+warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
 done_testing();
 

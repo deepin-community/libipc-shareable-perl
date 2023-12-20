@@ -1,4 +1,14 @@
 #!/usr/bin/make -f
 
+PACKAGE = $(shell dh_listpackages)
+TMP     = $(CURDIR)/debian/$(PACKAGE)
+
 %:
 	dh $@
+
+override_dh_auto_test:
+	CI_TESTING=1 dh_auto_test
+
+override_dh_auto_install:
+	dh_auto_install
+	$(RM) -v $(TMP)/usr/share/perl5/IPC/ipc.pl

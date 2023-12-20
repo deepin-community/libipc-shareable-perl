@@ -5,6 +5,14 @@ use Carp;
 use IPC::Shareable qw(:lock);
 use Test::More;
 
+BEGIN {
+    if (! $ENV{CI_TESTING}) {
+        plan skip_all => "Not on a legit CI platform...";
+    }
+}
+
+warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
+
 my $t = tie my $sv, 'IPC::Shareable', {
     create => 1,
     key => 'data', 
@@ -60,5 +68,8 @@ $t->unlock;
 for (0..2){
     is $t->sem->getval($_), $none[$_], "after share nb lock unlock, sem $_ set to $none[$_] ok";
 }
+
+IPC::Shareable::_end;
+warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
 done_testing();

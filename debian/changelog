@@ -1,8 +1,46 @@
-libipc-shareable-perl (1.06-1) UNRELEASED; urgency=medium
+libipc-shareable-perl (1.13-1) unstable; urgency=medium
 
-  * update
+  * Import upstream version 1.13.
+  * Declare compliance with Debian Policy 4.6.1.
+  * Don't install new debug/example script into binary package.
 
- -- Debian Perl Group <pkg-perl-maintainers@lists.alioth.debian.org>  Wed, 25 May 2022 16:09:30 +0800
+ -- gregor herrmann <gregoa@debian.org>  Sat, 15 Oct 2022 21:52:21 +0200
+
+libipc-shareable-perl (1.12-1) unstable; urgency=medium
+
+  * Import upstream version 1.12.
+  * Update 32bit.patch to check for $Config{sizesize} as proposed by Niko
+    Tyni in the GitHub issue.
+
+ -- gregor herrmann <gregoa@debian.org>  Mon, 21 Mar 2022 18:51:56 +0100
+
+libipc-shareable-perl (1.09-2) unstable; urgency=medium
+
+  * Revert "Drop 32bit.patch, fixed (similarly) upstream."
+    The test failure on 32-bit architectures still exists.
+    (Closes: #997829)
+
+ -- gregor herrmann <gregoa@debian.org>  Mon, 07 Mar 2022 18:26:06 +0100
+
+libipc-shareable-perl (1.09-1) unstable; urgency=medium
+
+  * Import upstream version 1.08.
+  * Drop 32bit.patch, fixed (similarly) upstream.
+  * Add new test dependency: libmock-sub-perl.
+
+  * Import upstream version 1.09.
+  * Run tests with CI_TESTING set.
+    Otherwise almost all tests are skipped.
+
+ -- gregor herrmann <gregoa@debian.org>  Mon, 07 Mar 2022 00:14:26 +0100
+
+libipc-shareable-perl (1.06-2) unstable; urgency=medium
+
+  * Add patch to mark tests as TODO which fail on 32bit architectures.
+    Thanks to Niko Tyni for the analysis. (Closes: #997829)
+  * Update years of packaging copyright.
+
+ -- gregor herrmann <gregoa@debian.org>  Sat, 22 Jan 2022 19:06:22 +0100
 
 libipc-shareable-perl (1.06-1) unstable; urgency=medium
 

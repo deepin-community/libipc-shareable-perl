@@ -6,6 +6,14 @@ use Data::Dumper;
 use IPC::Shareable;
 use Test::More;
 
+BEGIN {
+    if (! $ENV{CI_TESTING}) {
+        plan skip_all => "Not on a legit CI platform...";
+    }
+}
+
+warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
+
 my $k = tie my $sv, 'IPC::Shareable', 'test', { create => 1, destroy => 1 };
 
 # seg()
@@ -43,6 +51,9 @@ is ref $knot_sem, 'IPC::Semaphore', "knot sem() is the proper object";
 is ref $tied_sem, 'IPC::Semaphore', "tied sem() is the proper object";
 
 is $knot_sem->id, $tied_sem->id, "knot and tied sem() hashes have the same id";
+
+IPC::Shareable::_end;
+warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
 done_testing();
 

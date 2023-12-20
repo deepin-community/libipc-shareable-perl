@@ -4,6 +4,14 @@ use strict;
 use IPC::Shareable;
 use Test::More;
 
+BEGIN {
+    if (! $ENV{CI_TESTING}) {
+        plan skip_all => "Not on a legit CI platform...";
+    }
+}
+
+warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
+
 tie my @av, 'IPC::Shareable', { destroy => 1 };
 
 my @words = qw(tic tac toe);
@@ -57,5 +65,8 @@ is $av[1], 'i', "splice 1 ok";
 is $av[2], 'spliced', "splice 2 ok";
 is $gone[0], 'fie', "splice 3 ok";
 is $gone[1], 'foe', "splice 4 ok";
+
+IPC::Shareable::_end;
+warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
 done_testing();
