@@ -1,6 +1,7 @@
 use warnings;
 use strict;
 
+use Data::Dumper;
 use IPC::Shareable;
 use Test::More;
 
@@ -12,21 +13,18 @@ BEGIN {
 
 warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
-my $k = tie my $sv, 'IPC::Shareable', {
+my $mod = 'IPC::Shareable';
+
+my $ph = $mod->new(
+    key => 'hash',
     create => 1,
-    destroy => 1,
-    size => 1,
-};
+    destroy => 1
+);
 
-my $ok = eval {
-    $sv = "more than one byte";
-    1;
-};
+my $k = tied %$ph;
 
-is $ok, undef, "Overwriting the byte boundary size of an shm barfs ok";
-like $@, qr/exceeds shared segment size/, "...and the error is sane";
-
-(tied $sv)->clean_up_all;
+is ref $k, 'IPC::Shareable', "tied() returns a proper IPC::Shareable object ok";
+is exists $k->{attributes}, 1, "...and it has proper attributes ok";
 
 IPC::Shareable::_end;
 warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};

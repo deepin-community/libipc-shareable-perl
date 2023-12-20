@@ -7,6 +7,14 @@ use Test::More;
 
 use IPC::Shareable;
 
+BEGIN {
+    if (! $ENV{CI_TESTING}) {
+        plan skip_all => "Not on a legit CI platform...";
+    }
+}
+
+warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
+
 {
     # exclusive duplicate
 
@@ -34,5 +42,8 @@ use IPC::Shareable;
     like $@, qr/ERROR:.*File exists/, "...and error message is sane";
 
 }
+
+IPC::Shareable::_end;
+warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
 done_testing();

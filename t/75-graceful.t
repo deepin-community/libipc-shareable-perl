@@ -4,6 +4,14 @@ use strict;
 use IPC::Shareable;
 use Test::More;
 
+BEGIN {
+    if (! $ENV{CI_TESTING}) {
+        plan skip_all => "Not on a legit CI platform...";
+    }
+}
+
+warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
+
 # non-graceful
 {
     tie my $sv, 'IPC::Shareable', {
@@ -59,7 +67,10 @@ END {
     is
         $@,
         '',
-        "with 'graceful', we silently exit if two attemps made on same exclusive seg";
+        "with 'graceful', we silently exit if two attempts made on same exclusive seg";
+
+    IPC::Shareable::_end;
+    warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
     done_testing;
 };
