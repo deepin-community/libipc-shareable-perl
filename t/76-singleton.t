@@ -4,6 +4,14 @@ use strict;
 use IPC::Shareable;
 use Test::More;
 
+BEGIN {
+    if (! $ENV{CI_TESTING}) {
+        plan skip_all => "Not on a legit CI platform...";
+    }
+}
+
+warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
+
 # bad param
 
 my $ok = eval { IPC::Shareable->singleton(); 1 };
@@ -31,5 +39,9 @@ my ($proc, $warning);
 END {
     is $proc, -1, "singleton() on second call doesn't return anything ok";
     is $warning, undef, "singleton outputs no warnings by default";
+
+    IPC::Shareable::_end;
+    warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
+
     done_testing;
 };
