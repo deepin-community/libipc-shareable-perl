@@ -6,6 +6,14 @@ use Data::Dumper;
 use IPC::Shareable;
 use Test::More;
 
+BEGIN {
+    if (! $ENV{CI_TESTING}) {
+        plan skip_all => "Not on a legit CI platform...";
+    }
+}
+
+warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
+
 # array
 {
     my @test_data = (
@@ -90,6 +98,9 @@ use Test::More;
 
     IPC::Shareable->clean_up_all;
 }
+
+IPC::Shareable::_end;
+warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
 done_testing;
 

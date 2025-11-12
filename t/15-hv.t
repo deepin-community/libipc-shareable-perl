@@ -5,6 +5,14 @@ use Data::Dumper;
 use Test::More;
 use IPC::Shareable;
 
+BEGIN {
+    if (! $ENV{CI_TESTING}) {
+        plan skip_all => "Not on a legit CI platform...";
+    }
+}
+
+warn "Segs Before: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
+
 my $mod = 'IPC::Shareable';
 
 my $knot = tie my %hv, $mod, {
@@ -72,6 +80,9 @@ is keys(%hv), 0, "clearing a hash works ok";
 IPC::Shareable->clean_up_all;
 
 is %hv, '', "hash deleted after clean_up()";
+
+IPC::Shareable::_end;
+warn "Segs After: " . IPC::Shareable::ipcs() . "\n" if $ENV{PRINT_SEGS};
 
 done_testing();
 
